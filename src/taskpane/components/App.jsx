@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 
 const API_URL = "https://training-tasks-api.test/api";
 
@@ -10,25 +10,39 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(null);
+  const [templates, setTemplates] = useState([]);
+
+  useEffect(() => {
+    if (token) loadTemplates();
+  }, [token]);
+
+  const loadTemplates = async () => {
+    try {
+      const response = await fetch(`${API_URL}/templates`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await response.json();
+      setTemplates(data);
+    } catch (e) {
+      console.log("Error cargando templates:", e);
+    }
+  };
 
   const handleLogin = async () => {
     setError("");
     setLoading(true);
-
     try {
       const response = await fetch(`${API_URL}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-
       const data = await response.json();
-
       if (!response.ok) {
         setError(data.message || "Error al iniciar sesión.");
       } else {
-        setUser(data.user);
         setToken(data.token);
+        setUser(data.user);
       }
     } catch (e) {
       setError("No se pudo conectar con el servidor.");
@@ -37,14 +51,78 @@ const App = () => {
     }
   };
 
+  const handleLogout = () => {
+    setToken(null);
+    setUser(null);
+    setTemplates([]);
+  };
+
   if (user) {
     return (
       <div style={{ padding: "16px", fontFamily: "Segoe UI, sans-serif" }}>
-        <h2 style={{ color: "#1a73e8" }}>TrainingTasks</h2>
-        <p>
-          Bienvenido, <strong>{user.name}</strong>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            marginBottom: "16px",
+          }}
+        >
+          <div>
+            <h2 style={{ color: "#1a73e8", margin: 0 }}>TrainingTasks</h2>
+            <p style={{ margin: 0, fontSize: "12px", color: "#666" }}>
+              {user.name} · {user.role}
+            </p>
+          </div>
+          <button
+            onClick={handleLogout}
+            style={{
+              padding: "6px 12px",
+              backgroundColor: "#e53935",
+              color: "white",
+              border: "none",
+              borderRadius: "4px",
+              fontSize: "12px",
+              cursor: "pointer",
+            }}
+          >
+            Salir
+          </button>
+        </div>
+
+        <p style={{ fontSize: "13px", fontWeight: "600", marginBottom: "8px" }}>
+          Ejercicios disponibles:
         </p>
-        <p style={{ fontSize: "13px", color: "#666" }}>Rol: {user.role}</p>
+
+        {templates.length === 0 ? (
+          <p style={{ fontSize: "13px", color: "#999" }}>No hay ejercicios disponibles.</p>
+        ) : (
+          templates.map((t) => (
+            <div
+              key={t.id}
+              style={{
+                border: "1px solid #ddd",
+                borderRadius: "6px",
+                padding: "10px",
+                marginBottom: "8px",
+              }}
+            >
+              <p style={{ margin: "0 0 4px", fontSize: "13px", fontWeight: "600" }}>{t.name}</p>
+              <p style={{ margin: "0 0 8px", fontSize: "12px", color: "#666" }}>{t.description}</p>
+              <span
+                style={{
+                  fontSize: "11px",
+                  backgroundColor: "#e8f0fe",
+                  color: "#1a73e8",
+                  padding: "2px 8px",
+                  borderRadius: "10px",
+                }}
+              >
+                {t.app}
+              </span>
+            </div>
+          ))
+        )}
       </div>
     );
   }
