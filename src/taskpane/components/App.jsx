@@ -14,7 +14,9 @@ export default function App() {
   const [templates, setTemplates] = useState([]);
   const [session, setSession] = useState(null);
   const [timeLeft, setTimeLeft] = useState(0);
-  const [verifying, setVerifying] = useState(null);
+  const [checkedSteps, setCheckedSteps] = useState({});
+  const [verifying, setVerifying] = useState(false);
+  const [results, setResults] = useState(null);
   const timerRef = useRef(null);
 
   useEffect(() => {
@@ -22,13 +24,13 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
-    if (!session) return;
+    if (!session || session.mode !== "exam") return;
     setTimeLeft(Math.floor(session.seconds_left));
     timerRef.current = setInterval(() => {
       setTimeLeft((t) => {
         if (t <= 1) {
           clearInterval(timerRef.current);
-          handleExpire();
+          handleVerifyAll(true);
           return 0;
         }
         return t - 1;
@@ -37,14 +39,10 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [session?.session_id]);
 
-  
   const api = async (path, method = "GET", body = null) => {
     const res = await fetch(`${API_URL}${path}`, {
       method,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: body ? JSON.stringify(body) : null,
     });
     return res.json();
@@ -52,10 +50,9 @@ export default function App() {
 
   const loadTemplates = async () => {
     try {
-      const data = await api("/templates");
-      setTemplates(data);
+      setTemplates(await api("/templates"));
     } catch (e) {
-      console.error("Error cargando templates:", e);
+      console.error(e);
     }
   };
 
@@ -86,6 +83,8 @@ export default function App() {
     try {
       const data = await api("/sessions/start", "POST", { template_id: templateId });
       setSession(data);
+      setCheckedSteps({});
+      setResults(null);
     } catch {
       setError("Error al iniciar el ejercicio.");
     } finally {
@@ -93,33 +92,36 @@ export default function App() {
     }
   };
 
-  const handleVerifyStep = async (step) => {
-    setVerifying(step.step_id);
-    try {
-      const passed = await runChecker(step.check_type, step.check_params);
-      await api(`/sessions/${session.session_id}/verify/${step.step_id}`, "POST", { passed });
-      setSession((prev) => ({
-        ...prev,
-        steps: prev.steps.map((s) =>
-          s.step_id === step.step_id ? { ...s, passed, attempts: s.attempts + 1 } : s
-        ),
-      }));
-    } catch (e) {
-      console.error("Error verificando paso:", e);
-    } finally {
-      setVerifying(null);
-    }
+  const toggleCheck = (stepId) => {
+    setCheckedSteps((prev) => ({ ...prev, [stepId]: !prev[stepId] }));
   };
 
-  const handleFinish = async () => {
+  const handleVerifyAll = async (expired = false) => {
     clearInterval(timerRef.current);
-    const data = await api(`/sessions/${session.session_id}/finish`, "POST");
-    setSession((prev) => ({ ...prev, status: "completed", score: data.score }));
-  };
+    setVerifying(true);
+    try {
+      const stepResults = await Promise.all(
+        session.steps.map(async (step) => {
+          const passed = await runChecker(step.check_type, step.check_params);
+          return { step_id: step.step_id, passed };
+        })
+      );
 
-  const handleExpire = async () => {
-    await api(`/sessions/${session.session_id}/expire`, "POST");
-    setSession((prev) => ({ ...prev, status: "expired" }));
+      const data = await api(`/sessions/${session.session_id}/verify-all`, "POST", {
+        results: stepResults,
+      });
+
+      setResults({
+        ...data,
+        stepResults,
+        expired,
+      });
+      setSession((prev) => ({ ...prev, status: expired ? "expired" : "completed" }));
+    } catch (e) {
+      console.error("Error verificando:", e);
+    } finally {
+      setVerifying(false);
+    }
   };
 
   const handleLogout = () => {
@@ -128,16 +130,15 @@ export default function App() {
     setUser(null);
     setTemplates([]);
     setSession(null);
+    setResults(null);
+    setCheckedSteps({});
   };
 
-  const formatTime = (s) => {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
+  const formatTime = (s) => `${Math.floor(s / 60)}:${(s % 60).toString().padStart(2, "0")}`;
 
-  const passedCount = session?.steps?.filter((s) => s.passed).length ?? 0;
+  const checkedCount = Object.values(checkedSteps).filter(Boolean).length;
   const totalCount = session?.steps?.length ?? 0;
+  const isExam = session?.mode === "exam";
 
   // ── LOGIN ──────────────────────────────────────────────────────────────────
   if (!user)
@@ -197,48 +198,143 @@ export default function App() {
       </div>
     );
 
-  // ── RESULTADO FINAL ────────────────────────────────────────────────────────
-  if (session && (session.status === "completed" || session.status === "expired"))
+  // ── REPORTE FINAL ──────────────────────────────────────────────────────────
+  if (results)
     return (
-      <div style={{ padding: 16, fontFamily: "Segoe UI, sans-serif", textAlign: "center" }}>
-        <h2 style={{ color: "#1a73e8" }}>TrainingTasks</h2>
-        <p style={{ fontSize: 13, color: "#666" }}>
-          {session.status === "expired" ? "⏰ Tiempo agotado" : "✅ Ejercicio completado"}
-        </p>
+      <div
+        style={{
+          fontFamily: "Segoe UI, sans-serif",
+          display: "flex",
+          flexDirection: "column",
+          height: "100vh",
+        }}
+      >
         <div
           style={{
-            fontSize: 48,
-            fontWeight: "bold",
-            color: session.score >= 70 ? "#2e7d32" : "#c62828",
-            margin: "16px 0",
-          }}
-        >
-          {session.score}%
-        </div>
-        <p style={{ fontSize: 13, color: "#444" }}>
-          {passedCount} de {totalCount} pasos correctos
-        </p>
-        <button
-          onClick={() => setSession(null)}
-          style={{
-            marginTop: 16,
-            padding: "8px 24px",
+            padding: "10px 16px",
             backgroundColor: "#1a73e8",
             color: "white",
-            border: "none",
-            borderRadius: 4,
-            cursor: "pointer",
+            flexShrink: 0,
           }}
         >
-          Volver a ejercicios
-        </button>
+          <p style={{ margin: 0, fontSize: 12, fontWeight: 600 }}>{session.template.name}</p>
+          <p style={{ margin: 0, fontSize: 11, opacity: 0.85 }}>
+            {results.expired ? "⏰ Tiempo agotado" : "✅ Ejercicio verificado"}
+          </p>
+        </div>
+
+        <div
+          style={{
+            padding: "12px 16px",
+            backgroundColor: "#f5f5f5",
+            textAlign: "center",
+            flexShrink: 0,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 42,
+              fontWeight: "bold",
+              color: results.score >= 70 ? "#2e7d32" : "#c62828",
+            }}
+          >
+            {results.score}%
+          </div>
+          <p style={{ margin: "4px 0 0", fontSize: 13, color: "#555" }}>
+            {results.passed} de {results.total} pasos correctos
+          </p>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto" }}>
+          {session.steps.map((step, i) => {
+            const result = results.stepResults.find((r) => r.step_id === step.step_id);
+            const passed = result?.passed ?? false;
+            return (
+              <div
+                key={step.step_id}
+                style={{
+                  padding: "8px 16px",
+                  borderBottom: "1px solid #eee",
+                  backgroundColor: passed ? "#f1f8e9" : "#fff3f3",
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 14, minWidth: 20, marginTop: 1 }}>
+                  {passed ? "✅" : "❌"}
+                </span>
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 11,
+                    color: passed ? "#2e7d32" : "#c62828",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <strong>{i + 1}.</strong> {step.description}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+
+        <div
+          style={{
+            padding: "10px 16px",
+            borderTop: "1px solid #eee",
+            display: "flex",
+            gap: 8,
+            flexShrink: 0,
+          }}
+        >
+          <button
+            onClick={() => {
+              setResults(null);
+              setSession(null);
+            }}
+            style={{
+              flex: 1,
+              padding: 8,
+              backgroundColor: "#1a73e8",
+              color: "white",
+              border: "none",
+              borderRadius: 4,
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            Volver a ejercicios
+          </button>
+          <button
+            onClick={handleLogout}
+            style={{
+              padding: "8px 12px",
+              backgroundColor: "#e53935",
+              color: "white",
+              border: "none",
+              borderRadius: 4,
+              fontSize: 13,
+              cursor: "pointer",
+            }}
+          >
+            Salir
+          </button>
+        </div>
       </div>
     );
 
   // ── EJERCICIO ACTIVO ───────────────────────────────────────────────────────
   if (session)
     return (
-      <div style={{ fontFamily: "Segoe UI, sans-serif" }}>
+      <div
+        style={{
+          fontFamily: "Segoe UI, sans-serif",
+          display: "flex",
+          flexDirection: "column",
+          height: "100vh",
+        }}
+      >
         <div
           style={{
             padding: "10px 16px",
@@ -247,112 +343,172 @@ export default function App() {
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
+            flexShrink: 0,
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600 }}>{session.template.name}</span>
-          <span
-            style={{
-              fontSize: 14,
-              fontWeight: "bold",
-              color: timeLeft < 300 ? "#ffcc00" : "white",
-            }}
-          >
-            ⏱ {formatTime(timeLeft)}
+          <span style={{ fontSize: 12, fontWeight: 600, flex: 1, marginRight: 8 }}>
+            {session.template.name}
           </span>
+          {isExam && (
+            <span
+              style={{
+                fontSize: 14,
+                fontWeight: "bold",
+                color: timeLeft < 300 ? "#ffcc00" : "white",
+                whiteSpace: "nowrap",
+              }}
+            >
+              ⏱ {formatTime(timeLeft)}
+            </span>
+          )}
         </div>
+
         <div
           style={{
             padding: "6px 16px",
             backgroundColor: "#e8f0fe",
             fontSize: 12,
             color: "#1a73e8",
+            flexShrink: 0,
           }}
         >
-          {passedCount} / {totalCount} pasos completados
+          {checkedCount} / {totalCount} marcados
           <div style={{ height: 4, backgroundColor: "#c5cae9", borderRadius: 2, marginTop: 4 }}>
             <div
               style={{
                 height: 4,
                 backgroundColor: "#1a73e8",
                 borderRadius: 2,
-                width: `${(passedCount / totalCount) * 100}%`,
+                width: `${totalCount > 0 ? (checkedCount / totalCount) * 100 : 0}%`,
+                transition: "width 0.3s",
               }}
             />
           </div>
         </div>
-        <div style={{ overflowY: "auto", maxHeight: "calc(100vh - 160px)" }}>
+
+        <div style={{ flex: 1, overflowY: "auto" }}>
           {session.steps.map((step, i) => (
             <div
               key={step.step_id}
+              onClick={() => toggleCheck(step.step_id)}
               style={{
                 padding: "10px 16px",
                 borderBottom: "1px solid #eee",
-                backgroundColor: step.passed ? "#f1f8e9" : "white",
+                cursor: "pointer",
+                backgroundColor: checkedSteps[step.step_id] ? "#f1f8e9" : "white",
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                userSelect: "none",
               }}
             >
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                <span style={{ fontSize: 16, minWidth: 20 }}>{step.passed ? "✅" : "⬜"}</span>
-                <div style={{ flex: 1 }}>
+              <div
+                style={{
+                  width: 16,
+                  height: 16,
+                  border: "2px solid",
+                  borderColor: checkedSteps[step.step_id] ? "#2e7d32" : "#bbb",
+                  borderRadius: 3,
+                  backgroundColor: checkedSteps[step.step_id] ? "#2e7d32" : "white",
+                  flexShrink: 0,
+                  marginTop: 2,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                {checkedSteps[step.step_id] && (
+                  <span style={{ color: "white", fontSize: 10, lineHeight: 1 }}>✓</span>
+                )}
+              </div>
+              <div style={{ flex: 1 }}>
+                <p
+                  style={{
+                    margin: 0,
+                    fontSize: 12,
+                    color: checkedSteps[step.step_id] ? "#2e7d32" : "#333",
+                    lineHeight: 1.4,
+                  }}
+                >
+                  <strong>{i + 1}.</strong> {step.description}
+                </p>
+                {!isExam && step.hint && (
                   <p
                     style={{
-                      margin: "0 0 4px",
-                      fontSize: 12,
-                      fontWeight: 600,
-                      color: step.passed ? "#2e7d32" : "#333",
+                      margin: "4px 0 0",
+                      fontSize: 11,
+                      color: "#1565c0",
+                      backgroundColor: "#e3f2fd",
+                      padding: "3px 7px",
+                      borderRadius: 4,
+                      lineHeight: 1.4,
                     }}
                   >
-                    {i + 1}. {step.description}
+                    💡 {step.hint}
                   </p>
-                  {!step.passed && (
-                    <p style={{ margin: "0 0 6px", fontSize: 11, color: "#666" }}>{step.hint}</p>
-                  )}
-                  {!step.passed && (
-                    <button
-                      onClick={() => handleVerifyStep(step)}
-                      disabled={verifying === step.step_id}
-                      style={{
-                        padding: "4px 12px",
-                        fontSize: 11,
-                        backgroundColor: "#1a73e8",
-                        color: "white",
-                        border: "none",
-                        borderRadius: 3,
-                        cursor: "pointer",
-                      }}
-                    >
-                      {verifying === step.step_id ? "Verificando..." : "Verificar"}
-                    </button>
-                  )}
-                  {step.attempts > 0 && !step.passed && (
-                    <span style={{ marginLeft: 8, fontSize: 11, color: "#e53935" }}>
-                      ✗ Incorrecto ({step.attempts} intento{step.attempts > 1 ? "s" : ""})
-                    </span>
-                  )}
-                </div>
+                )}
               </div>
             </div>
           ))}
         </div>
-        <div style={{ padding: "10px 16px", borderTop: "1px solid #eee", display: "flex", gap: 8 }}>
-          <button
-            onClick={handleFinish}
+
+        <div style={{ padding: "10px 16px", borderTop: "1px solid #eee", flexShrink: 0 }}>
+          <p style={{ margin: "0 0 8px", fontSize: 12, color: "#555" }}>
+            Cuando termines, guarda el archivo como <strong>.docx</strong> y súbelo para verificar:
+          </p>
+          <input
+            type="file"
+            accept=".docx"
+            onChange={async (e) => {
+              const file = e.target.files[0];
+              if (!file) return;
+              setVerifying(true);
+              try {
+                const formData = new FormData();
+                formData.append("file", file);
+                const res = await fetch(`${API_URL}/sessions/${session.session_id}/verify-file`, {
+                  method: "POST",
+                  headers: { Authorization: `Bearer ${token}` },
+                  body: formData,
+                });
+                const data = await res.json();
+                if (!res.ok) {
+                  console.error("Error:", data);
+                  return;
+                }
+                clearInterval(timerRef.current);
+                setResults({ ...data, expired: false });
+                setSession((prev) => ({ ...prev, status: "completed" }));
+              } catch (e) {
+                console.error("Error subiendo archivo:", e);
+              } finally {
+                setVerifying(false);
+              }
+            }}
+            style={{ display: "none" }}
+            id="docx-upload"
+          />
+          <label
+            htmlFor="docx-upload"
             style={{
-              flex: 1,
+              display: "block",
+              textAlign: "center",
               padding: 8,
-              backgroundColor: "#2e7d32",
+              backgroundColor: verifying ? "#aaa" : "#2e7d32",
               color: "white",
-              border: "none",
               borderRadius: 4,
               fontSize: 13,
-              cursor: "pointer",
+              cursor: verifying ? "not-allowed" : "pointer",
             }}
           >
-            Finalizar
-          </button>
+            {verifying ? "Verificando..." : "📄 Subir documento y verificar"}
+          </label>
           <button
             onClick={handleLogout}
             style={{
-              padding: "8px 12px",
+              marginTop: 8,
+              width: "100%",
+              padding: 8,
               backgroundColor: "#e53935",
               color: "white",
               border: "none",
@@ -407,21 +563,35 @@ export default function App() {
             style={{ border: "1px solid #ddd", borderRadius: 6, padding: 10, marginBottom: 8 }}
           >
             <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 600 }}>{t.name}</p>
-            <p style={{ margin: "0 0 8px", fontSize: 12, color: "#666" }}>{t.description}</p>
+            <p style={{ margin: "0 0 6px", fontSize: 12, color: "#666" }}>{t.description}</p>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span
-                style={{
-                  fontSize: 11,
-                  backgroundColor: "#e8f0fe",
-                  color: "#1a73e8",
-                  padding: "2px 8px",
-                  borderRadius: 10,
-                }}
-              >
-                {t.app}
-              </span>
+              <div style={{ display: "flex", gap: 6 }}>
+                <span
+                  style={{
+                    fontSize: 11,
+                    backgroundColor: "#e8f0fe",
+                    color: "#1a73e8",
+                    padding: "2px 8px",
+                    borderRadius: 10,
+                  }}
+                >
+                  {t.app}
+                </span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    backgroundColor: t.mode === "exam" ? "#fce4ec" : "#e8f5e9",
+                    color: t.mode === "exam" ? "#c62828" : "#2e7d32",
+                    padding: "2px 8px",
+                    borderRadius: 10,
+                  }}
+                >
+                  {t.mode === "exam" ? "Examen" : "Entrenamiento"}
+                </span>
+              </div>
               <button
                 onClick={() => handleStartSession(t.id)}
+                disabled={loading}
                 style={{
                   padding: "6px 14px",
                   backgroundColor: "#1a73e8",

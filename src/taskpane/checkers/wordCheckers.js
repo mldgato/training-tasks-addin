@@ -1,3 +1,18 @@
+const styleMap = {
+  title: ["title", "título"],
+  "heading 1": ["heading 1", "título 1", "encabezado 1"],
+  "heading 2": ["heading 2", "título 2", "encabezado 2"],
+  "heading 3": ["heading 3", "título 3", "encabezado 3"],
+  normal: ["normal"],
+};
+
+function matchStyle(actual, expected) {
+  const actualLower = actual.toLowerCase().trim();
+  const expectedLower = expected.toLowerCase().trim();
+  const equivalents = styleMap[expectedLower] || [expectedLower];
+  return equivalents.some((e) => actualLower === e);
+}
+
 export const wordCheckers = {
   auto_pass: async () => true,
 
@@ -9,10 +24,16 @@ export const wordCheckers = {
   },
 
   word_document_title: async (context, params) => {
-    const props = context.document.properties;
-    props.load("title");
-    await context.sync();
-    return props.title === params.title;
+    try {
+      const url = Office.context.document.url;
+      if (!url) return false;
+      const parts = url.split(/[\\/]/);
+      const filename = parts[parts.length - 1];
+      const nameWithoutExt = filename.replace(/\.[^/.]+$/, "");
+      return nameWithoutExt.trim().toLowerCase() === params.title.trim().toLowerCase();
+    } catch {
+      return false;
+    }
   },
 
   word_paragraph_style: async (context, params) => {
@@ -21,10 +42,9 @@ export const wordCheckers = {
     await context.sync();
     if (paras.items.length <= params.paragraph_index) return false;
     const para = paras.items[params.paragraph_index];
-    para.load("styleBuiltIn,style");
+    para.load("style");
     await context.sync();
-    const styleName = para.style || "";
-    return styleName.toLowerCase().includes(params.style.toLowerCase());
+    return matchStyle(para.style, params.style);
   },
 
   word_paragraph_style_multiple: async (context, params) => {
@@ -36,7 +56,7 @@ export const wordCheckers = {
       const para = paras.items[index];
       para.load("style");
       await context.sync();
-      if (!para.style.toLowerCase().includes(params.style.toLowerCase())) return false;
+      if (!matchStyle(para.style, params.style)) return false;
     }
     return true;
   },
@@ -49,7 +69,7 @@ export const wordCheckers = {
       para.load("text,style");
       await context.sync();
       if (para.text.trim().includes(params.text.trim())) {
-        return para.style.toLowerCase().includes(params.style.toLowerCase());
+        return matchStyle(para.style, params.style);
       }
     }
     return false;
