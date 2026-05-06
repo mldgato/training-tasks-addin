@@ -458,7 +458,7 @@ export default function App() {
           </p>
           <input
             type="file"
-            accept=".docx"
+            accept=".docx,.docm"
             onChange={async (e) => {
               const file = e.target.files[0];
               if (!file) return;
