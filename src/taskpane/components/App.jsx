@@ -37,6 +37,7 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [session?.session_id]);
 
+  
   const api = async (path, method = "GET", body = null) => {
     const res = await fetch(`${API_URL}${path}`, {
       method,
